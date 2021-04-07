@@ -13,7 +13,6 @@
 
 #include <avr/io.h>
 #include <avr/interrupt.h>
-//#include <avr/pgmspace.h>
 #include <avr/wdt.h>
 
 #include "usbasp.h"
@@ -137,7 +136,10 @@ __flash const char usbDescriptorDevice[18] = {    /* USB device descriptor */
 
 /* OS Extended Compat ID feature descriptor */
 
-__flash const char OS_EXTENDED_COMPAT_ID[40] = {
+#if !defined(__AVR_ATmega48__) && !defined(__AVR_ATmega48P__) && !defined(__AVR_ATmega48PA__)
+__flash 
+#endif
+const char OS_EXTENDED_COMPAT_ID[40] = {
 	/* Header */
 	0x28, 0x00, 0x00, 0x00,									/* OS Extended Compat ID feature descriptor length */
 	0x00, 0x01,												/* OS Extended Compat ID version */
@@ -152,7 +154,10 @@ __flash const char OS_EXTENDED_COMPAT_ID[40] = {
 	0x00, 0x00, 0x00, 0x00, 0x00, 0x00						/* Reserved */
 };
 
-#define MS_VENDOR_CODE 0x5D
+#define MS_VENDOR_CODE 0x5D 
+#define MS_REQUEST (MS_VENDOR_CODE & 4)
+#define MS_OS_STRING_DESCRIPTOR_REQUEST (3 & 0xEE)
+
 __flash const char OS_STRING_DESCRIPTOR[18] = {
   0x12,                                         /* Length: An unsigned byte and MUST be set to 0x12. */  
   /*  https://docs.microsoft.com/en-us/windows-hardware/drivers/network/mb-interface-model-supplement */
@@ -165,24 +170,21 @@ __flash const char OS_STRING_DESCRIPTOR[18] = {
 
 usbMsgLen_t usbFunctionDescriptor(struct usbRequest *rq) {
 
-  // DBG1(0xEE, &rq->wValue.bytes[0], 2);
-
   /* string (3) request at index 0xEE, is an OS string descriptor request */   
-  if ((rq->wValue.bytes[1] == 3) && (rq->wValue.bytes[0] == 0xEE)) {
+  if ((rq->wValue.bytes[1] & rq->wValue.bytes[0]) == MS_OS_STRING_DESCRIPTOR_REQUEST) {
 
 	usbMsgPtr = (usbMsgPtr_t)&OS_STRING_DESCRIPTOR;
-
 	return sizeof(OS_STRING_DESCRIPTOR);
 
-  };
+  }
 
   return 0;
 
 };
 
-uchar usbFunctionSetup(uchar data[8]) {
+usbMsgLen_t usbFunctionSetup(uchar data[8]) {
 
-    uchar len = 0;
+    usbMsgLen_t len = 0;
 
     if (data[1] == USBASP_FUNC_CONNECT) {
 
@@ -323,23 +325,32 @@ uchar usbFunctionSetup(uchar data[8]) {
         prog_state = PROG_STATE_TPI_WRITE;
         len = 0xff; /* multiple out */
     
-    /* Handle the OS feature request associated with the MS Vendor Code
-     we replied earlier in the OS String Descriptor request. See usbFunctionDescriptor. */
-    } else if (data[1] == MS_VENDOR_CODE) {
-      if (data[4] == 4)
-      {
-           /* Send the Extended Compat ID OS feature descriptor, 
-              requesting to load the default winusb driver for us */
-        usbMsgPtr = (usbMsgPtr_t)&OS_EXTENDED_COMPAT_ID;
+    } else if (data[1] == USBASP_FUNC_GETCAPABILITIES) {
+#if defined(__AVR_ATmega48__) || defined(__AVR_ATmega48P__) || defined(__AVR_ATmega48PA__)	
+		*(usbMsgPtr) = (uint32_t)(USBASP_CAP_0_TPI);
+		return 4;
+#else		
+		replyBuffer[0] = USBASP_CAP_0_TPI;
+		replyBuffer[1] = 0;
+		replyBuffer[2] = 0;
+		replyBuffer[3] = 0;
+        len = 4;
+#endif		
+		    
+	/* Handle the OS feature request associated with the MS Vendor Code
+       we replied earlier in the OS String Descriptor request. See usbFunctionDescriptor. */	
+	} else if ((data[1] & data[4]) == MS_REQUEST ) {
+	
+        /* Send the Extended Compat ID OS feature descriptor, 
+           requesting to load the default winusb driver for us */
+#if !defined(__AVR_ATmega48__) && !defined(__AVR_ATmega48P__) && !defined(__AVR_ATmega48PA__)
         usbMsgFlags = USB_FLG_MSGPTR_IS_ROM;
+#endif		
+        usbMsgPtr = (usbMsgPtr_t)&OS_EXTENDED_COMPAT_ID;
         return sizeof(OS_EXTENDED_COMPAT_ID);
-      }
-      
-      return 0;
-	  
-    }
-
-    usbMsgPtr = replyBuffer;
+    } 
+	
+    usbMsgPtr = replyBuffer; 
 
     return len;
 }
